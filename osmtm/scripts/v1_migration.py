@@ -31,6 +31,7 @@ from osmtm.models import (
 )
 
 from sqlalchemy_i18n.manager import translation_manager
+from sqlalchemy.sql import functions
 
 import shapely
 
@@ -209,4 +210,7 @@ with transaction.manager:
     session_v2.flush()
 
 
-    # FIXME reset the project id sequence
+
+# Reset the project id sequence
+last_id = session_v2.query(functions.max(Project.id)).one()[0]
+session_v2.execute("ALTER SEQUENCE project_id_seq RESTART WITH %d;" % (last_id + 1))
