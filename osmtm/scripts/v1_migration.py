@@ -12,6 +12,10 @@ from sqlalchemy.schema import (
     MetaData,
 )
 
+from sqlalchemy.exc import (
+    IntegrityError
+)
+
 from osmtm.utils import (
     TileBuilder,
     max
@@ -23,6 +27,7 @@ from osmtm.models import (
     Project,
     Task,
     License,
+    User,
 )
 
 from sqlalchemy_i18n.manager import translation_manager
@@ -54,6 +59,10 @@ def header(msg):
 def success(msg):
     print bcolors.OKGREEN + msg + bcolors.ENDC
 
+
+def failure(msg):
+    print bcolors.FAIL + msg + bcolors.ENDC
+
 translation_manager.options.update({
     'locales': ['en'],
     'get_locale_fallback': True
@@ -72,23 +81,19 @@ session_v2.configure(bind=engine_v2)
 
 jobs = metadata_v1.tables['jobs']
 tiles = metadata_v1.tables['tiles']
+tiles_history = metadata_v1.tables['tiles_history']
 licenses = metadata_v1.tables['licenses']
 users_table = metadata_v1.tables['users']
 
 header("Cleaning up db")
 with transaction.manager:
     # FIXME we may need to empty the V2 db first
-    for project in session_v2.query(Project).all():
-        session_v2.delete(project)
-        session_v2.flush()
-
-    for area in session_v2.query(Area).all():
-        session_v2.delete(area)
-        session_v2.flush()
-
-    for license in session_v2.query(License).all():
-        session_v2.delete(license)
-        session_v2.flush()
+    session_v2.query(Task).delete()
+    session_v2.query(Project).delete()
+    session_v2.query(Area).delete()
+    session_v2.query(License).delete()
+    session_v2.query(User).delete()
+    session_v2.flush()
 
 header("Retrieving users ids")
 f = open('users.list', 'r+')
@@ -97,32 +102,47 @@ for line in f:
     user = line.split(';')
     users[user[0]] = user[1]
 
-with transaction.manager:
-    for k, u in enumerate(session_v1.query(users_table).all()):
-        username = u.username.encode('utf-8')
-        if username not in users:
-            print "%s - %s" % (k, u.username)
-            url = "http://whosthat.osmz.ru/whosthat.php?action=names&q=%s" % \
-                username
-            response = urllib.urlopen(url)
-            data = json.load(response)
-            f.write('%s;' % username)
+print len(users)
 
-            found = False
-            for user in data:
-                if u.username in user["names"]:
-                    found = True
-                    f.write('%s' % user['id'])
-                    users[username] = user['id']
+for k, u in enumerate(session_v1.query(users_table).all()):
+    username = u.username.encode('utf-8')
+    if username not in users:
+        print "%s - %s" % (k, u.username)
+        url = "http://whosthat.osmz.ru/whosthat.php?action=names&q=%s" % \
+            username
+        response = urllib.urlopen(url)
+        data = json.load(response)
+        f.write('%s;' % username)
 
-            if not found:
-                f.write('%s' % -1)
-                users[username] = -1
+        found = False
+        for user in data:
+            if u.username in user["names"]:
+                found = True
+                f.write('%s' % user['id'])
+                users[username] = user['id']
 
-            f.write(';\n')
+        if not found:
+            f.write('%s' % -1)
+            users[username] = -1
+
+        f.write(';\n')
 f.close()
 
 print "%d users found" % len(users)
+
+header("Importing users in v2")
+# inverting users mapping, key is now id
+users = {v: k for k, v in users.items()}
+
+with transaction.manager:
+    for id in users:
+        username = users[id]
+        if id != -1:
+            user = User(id, username)
+            session_v2.add(user)
+    session_v2.flush()
+
+success("%d users - successfully imported" % (len(users)))
 
 header("Importing licenses")
 with transaction.manager:
@@ -134,13 +154,13 @@ with transaction.manager:
         license.description = l.description
         license.plain_text = l.plain_text
         session_v2.add(license)
-        session_v2.flush()
         success("License %s - \"%s\" successfully imported" % (l.id, l.name))
+    session_v2.flush()
 
 
 header("Importing jobs and tasks")
 with transaction.manager:
-    for job in session_v1.query(jobs).filter(jobs.c.id < 5).all():
+    for job in session_v1.query(jobs).filter(jobs.c.id).all():
 
         geometry = shapely.wkt.loads(job.geometry)
         geometry = ST_Transform(shape.from_shape(geometry, 3857), 4326)
@@ -173,17 +193,20 @@ with transaction.manager:
                 task.state = Task.state_validated
             tasks.append(task)
 
+        #for tile in session_v1.query(tiles_history).filter(tiles_history.c.job_id == job.id).all():
+            #print tile
+
         project.tasks = tasks
 
         session_v2.add(project)
         session_v2.flush()
-
-        project.done = project.get_done()
-        project.validated = project.get_validated()
-        session_v2.flush()
-
         success("Job %s - \"%s\" successfully imported" % (job.id, job.title))
 
+    header("Updating projects done stats")
+    for project in session_v2.query(Project).all():
+        project.done = project.get_done()
+        project.validated = project.get_validated()
+    session_v2.flush()
 
 
     # FIXME reset the project id sequence

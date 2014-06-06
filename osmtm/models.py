@@ -2,6 +2,7 @@ from sqlalchemy import (
     Table,
     Column,
     Integer,
+    BigInteger,
     Unicode,
     ForeignKey,
     ForeignKeyConstraint,
@@ -92,14 +93,14 @@ from sqlalchemy_i18n import (
 make_translatable()
 
 users_licenses_table = Table('users_licenses', Base.metadata,
-                             Column('user', Integer, ForeignKey('users.id')),
+                             Column('user', BigInteger, ForeignKey('users.id')),
                              Column('license', Integer,
                                     ForeignKey('licenses.id')))
 
 
 class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(BigInteger, primary_key=True, index=True)
     username = Column(Unicode)
     admin = Column(Boolean)
 
